@@ -12,13 +12,13 @@ Utility functions
 ;; TODO: prove that we can access map like alist
 (definec map-keys (m :all) :tl
 	 :input-contract (good-map m)
-	 (if (lendp m)
+	 (if (endp m)
 	     '()
 	     (cons (caar m) (map-keys (cdr m)))))
 
 (definec map-values (m :all) :tl
 	 :input-contract (good-map m)
-	 (if (lendp m)
+	 (if (endp m)
 	     '()
 	     (cons (cdar m) (map-values (cdr m)))))
 
@@ -80,19 +80,17 @@ Replica initialization functions
 
 |#
 
-;; TODO: why does function contract fail?
 ;; Initialize replica.
 (definec init-replica (addr :address role :replica-role backups :soaddr) :replica
-	 :skip-function-contractp t
-;	 :function-contract-hints (("Goal" :in-theory (disable addressp))
-;				   ("Subgoal 2" :use ((:instance replica-constructor-pred
-;								 (replica-addr addr)
-;								 (replica-role role)
-;								 (replica-data '())
-;								 (replica-buffer '())
-;								 (replica-backups backups))))
+	 :function-contract-hints (("Goal" :in-theory (disable addressp replica))
+				   ("Subgoal 1'" :use ((:instance replica-constructor-pred
+								 (replica-addr addr)
+								 (replica-role role)
+								 (replica-data '())
+								 (replica-buffer '())
+								 (replica-backups backups)))))
 
-	 :input-contract (! (mget addr backups))
+	 :input-contract (and (! (mget addr backups)))
 	 (replica addr role '() '() backups))
 
 	 
