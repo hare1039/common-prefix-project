@@ -28,35 +28,32 @@ Replica defdatas
 
 |#
 
+(defdata key-type   int)
 (defdata value-type int)
+
 (defdata addr-comp (range integer (0 <= _ < 256)))
 (defdata address (list addr-comp addr-comp addr-comp addr-comp))
 (defdata loaddr (listof address))
 
-(defdata replica-role (enum '(PRIMARY BACKUP)))
-(defdata replica-data (listof value-type))
-(defdata replica-buffer (map nat value-type))
+(defdata replica-role          (enum '(PRIMARY BACKUP)))
+(defdata replica-memory        (map key-type value-type))
+(defdata replica-write-history (listof (cons key-type value-type)))
+(defdata replica-buffer        (map nat value-type))
 (defdata replica (record
-          (addr . address)
-          (role . replica-role)
-          (data . replica-data) ;; store committed data
-          (buffer . replica-buffer) ;; store out-of-order updates
-          (backups . loaddr)))
+                  (addr    . address)
+                  (role    . replica-role)
+                  (memory  . replica-memory)
+                  (history . replica-write-history)
+                  (buffer  . replica-buffer)
+                  (backups . loaddr)))
 
 (defdata replica-group (map address replica))
 
-
-#|
-
-Replica initialization functions
-
-|#
-
-;; Initialize replica.
 (definec init-replica (addr :address role :replica-role backups :loaddr) :replica
          :skip-tests t
+         :skip-body-contractsp t
          :skip-function-contractp t
-     (replica addr role '() '() backups))
+         (replica addr role '() '() '() backups))
 
 (definec init-replica-group-helper (addrs :loaddr backups :loaddr) :replica-group
      :input-contract (and (! (lendp addrs))
@@ -81,32 +78,6 @@ Replica utility functions
 (definec primaryp (r :replica) :bool
   (== 'PRIMARY (mget :role r)))
 
-
-#|
-
-Replica validity predicate
-
-|#
-
-;; Returns t if replica state is valid. Nil otherwise.
-;; This should perform the following checks:
-;; - replica's `buffer` keys are all > (len data)
-(definec valid-replica (r :replica) :bool
-     ...)
-
-
-;; Returns t if replica-group state is valid. Nil otherwise.
-;; This should perform the following checks:
-;; - rg contains at least one replica
-;; - rg contains exactly one primary
-;; - primary's member `backups` contains all backup replica addresses
-;; - rg is a map of address to replica, so map key equals replica's member `addr`
-;;   - this implies uniqueness of addresses
-;; - all replicas' `data` is a prefix of primary's `data`
-(definec valid-replica-group (rg :replica-group) :bool
-     ...)
-
-
 #|
 
 Network defdatas
@@ -124,7 +95,7 @@ Network defdatas
 (defdata packet (record
                  (src . address)
                  (dst . address)
-                 (op . operation)))
+                 (op  . operation)))
 (defdata network (listof packet))
 
 
@@ -134,24 +105,48 @@ Network validity predicates
 
 |#
 
+(set-ignore-ok t)
 
-#|
+(defdata trans-return-type (list replica network))
 
-Replica transition functions
+(definec trans-replica-read-req (r :replica dst :address) :trans-return-type ;;TODO
+         :skip-tests t
+         :skip-body-contractsp t
+         :skip-function-contractp t
+         (let* ((val (car (mget :data r)))
+                (op `(READ-RESP ,val)))
+           (list r (list (packet
+                          (mget :addr r) dst op)))))
 
-|#
+(definec trans-replica-write-req (r :replica dst :address write-value :value-type) :trans-return-type ;;TODO
+         :skip-tests t
+         :skip-body-contractsp t
+         :skip-function-contractp t
 
-(definec trans-replica-read-req (r :replica dst :address) :any ;;TODO
-     (let* ((val (car (mget :data r)))
-        (op `(READ-RESP ,val)))
-       (list r (list op))))
+         (let* ((history (mget :replica-write-history r))
+                (memory  (mget :replica-memory r))
+                (new-history (append history write-value))
+                (new-memory (mset  memory))
+                (new-replica (replica
+                              (mset :data appended-log r)))
+                (response `(WRITE-RESP)))
+           (list new-replica (list (packet
+                                    (mget :addr r) dst d op)))))
+
+(definec trans-replica-repl-req (r :replica dst :address d :replica-data) :any ;;TODO
+         :skip-proof t
+         (let* ((log (mget :data r))
+                (appended-log (append log d))
+                (new-replica (mset :data appended-log r))
+                (op `(REPL-RESP)))
+           (list new-replica (list op))))
 
 (definec transition-replica (r :replica op :operation dst :address) :any ;;TODO
      (match op
-         (:read-req (trans-replica-read-req r dst))
-       (:write-req (trans-replica-write-req r dst (second op)))
-       (:repl-req (trans-replica-repl-req r dst (second op) (third op)))
-       (& (list r '()))))
+         (:read-req  (trans-replica-read-req  r dst))
+         (:write-req (trans-replica-write-req r dst (second op)))
+         (:repl-req  (trans-replica-repl-req  r dst (second op) (third op)))
+         (& (list r '()))))
 
 (definec transition-replica-group (rg :replica-group p :packet) :any ;; TODO
      (let* ((src (mget :src p))
