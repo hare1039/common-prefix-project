@@ -338,20 +338,27 @@ Replica transition functions
 (definec select-keys (keys :listof-keys buffer :replica-buffer) :replica-buffer
          (select-keys-impl keys buffer '()))
 
+(defdata optional-nat (oneof nat nil))
+(definec at-buffer (buffer :replica-buffer key :optional-nat) :value-type
+         (let ((value (mget key buffer)))
+           (if (or (== value nil) (== key nil))
+               0
+               value)))
+
 (include-book "sorting/msort" :dir :system)
 
 (definec update-data (current-history :replica-data buffer :replica-buffer) :pair-data-buffer
-         (let* ((maxindex          (len current-history))
-                (key-index         (map-keys buffer))
-                (sorted-key-index  (acl2::msort key-index))
+         (let* ((maxindex         (len current-history))
+                (key-index        (map-keys buffer))
+                (sorted-key-index (acl2::msort key-index))
 
-                (first-key         (car sorted-key-index))
-                (first-value       (mget first-key buffer))
-                (new-history       (append current-history first-value))
+                (first-key        (car sorted-key-index))
+                (first-value      (at-buffer buffer first-key))
+                (new-history      (append current-history (list first-value)))
 
-                (rest-keys         (cdr sorted-key-index)))
+                (rest-keys        (cdr sorted-key-index)))
            (if (== maxindex first-key)
-               (update-data current-history (select-keys rest-keys buffer))
+               (update-data new-history (select-keys rest-keys buffer))
                (cons current-history buffer))))
 
 ; (keys-should-apply (loop$ for x in sorted-key-index when (<= maxindex x) collect x))
