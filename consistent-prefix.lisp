@@ -2,6 +2,36 @@
 
 #|
 
+Utility functions
+
+|#
+
+(definec is-prefix-of (test :tl base :tl) :bool
+	 (cond
+	   ((lendp test) t)
+	   ((lendp base) nil)
+	   ((== (first test) (first base))
+	    (is-prefix-of (rest test) (rest base)))
+	   (t nil)))
+
+(definec is-suffix-of (test :tl base :tl) :bool
+	 (is-prefix-of (reverse test) (reverse base)))
+
+(definec alowfkeyp (l :alist) :bool
+	 (if (lendp l)
+	     t
+	     (and (wf-keyp (caar l))
+		  (alowfkeyp (rest l)))))
+
+(definec alist-2-map (l :alist) :all
+	 :input-contract (alowfkeyp l)
+	 :output-contract (good-map (alist-2-map l))
+	 (if (lendp l)
+	     '()
+	     (mset (caar l) (cdar l) (alist-2-map (cdr l)))))
+
+#|
+
 Custom Set Implementation
 
 |#
@@ -24,14 +54,14 @@ Custom Set Implementation
 	     t
 	     (and (wf-keyp (first l))
 		  (lowfkeyp (rest l)))))
+
 (definec l2s (l :tl) :all
 	 :input-contract (lowfkeyp l)
 	 :output-contract (good-map (l2s l))
 	 (if (lendp l)
 	     '()
 	     (sadd (first l) (l2s (rest l)))))
-(in-package "ACL2S")
-(include-book "utils")
+
 
 ;; NOTE: Map type doesn't work in current version of ALC2s.
 ;; Therefore, it was suggested to use alistof instead.
@@ -87,10 +117,6 @@ Replica creation functions
 |#
 
 ;; Initialize replica group.
-(definec init-replica-group (primary :address backups :soaddr) :replica-group
-	 ;;     :input-contract (! (mget primary backups))
-	 (init-replica-group-helper (s2l backups) primary backups))
-
 (definec init-replica (addr :address role :replica-role backups :soaddr) :replica
 	 :function-contract-hints (("goal" :use ((:instance replica-constructor-pred
 							    (replica-addr addr)
@@ -111,6 +137,10 @@ Replica creation functions
              (mset primary (init-replica primary 'PRIMARY backups) '())
              (mset (first addrs) (init-replica (first addrs) 'BACKUP '())
                    (init-replica-group-helper (rest addrs) primary backups))))
+
+(definec init-replica-group (primary :address backups :soaddr) :replica-group
+	 ;;     :input-contract (! (mget primary backups))
+	 (init-replica-group-helper (s2l backups) primary backups))
 
 
 #|
@@ -143,7 +173,6 @@ Replica utility functions
              (if (! (primaryp (cdar rg)))
 		 (cons (cdar rg) (get-backups (rest rg)))
 		 (get-backups (rest rg)))))
-(in-package "ACL2S")
 
 
 #|
@@ -222,7 +251,6 @@ Packet creation functions
 							   (packet-dst dst)
 							   (packet-op op))))
 	 (packet src dst op))
-(in-package "ACL2S")
 
 
 #|
@@ -330,6 +358,16 @@ Replica transition functions
               (rg2 (mset dst r2 rg)))
 	   (cons rg2 pkts)))
 
+#|
+
+System state defdatas
+
+|#
+
+(defdata system-state (cons replica-group network))
+
+(definec init-system-state (primary :address backups :soaddr) :system-state
+	 (cons (init-replica-group primary backups) '()))
 
 #|
 
@@ -368,18 +406,6 @@ System state transition functions
 		    (st2 (transition-system-state st ev)))
 	       (transition st2 (rest evs)))))
 
-(definec init-system-statep (st :system-state) :bool
-	 (b* ((net (cdr st))
-	      ((when (!= net '())) nil)
-	      (rg (car st))
-	      ((when (! (single-primaryp rg))) nil)
-	      (primary (get-primary rg))
-	      (paddr (mget :addr primary))
-	      (backaddrs (mget :backups primary)))
-	   (== rg
-	       (init-replica-group paddr backaddrs))))
-
-
 (let* ((primary '(1 1 1 1))
        (backups (l2s '((2 2 2 2) (3 3 3 3))))
        (st (init-system-state primary backups))
@@ -395,3 +421,123 @@ System state transition functions
 	       3)
 	 ))
   (transition st evs))
+
+
+#|
+
+Properties to prove
+
+|#
+
+;(definec histories-are-prefix (replicas :lorep history :replica-write-history) :bool
+ ;    (if (lendp replicas)
+  ;       t
+;	 ;; use suffix since history grows from front
+ ;        (and (is-suffix-of (mget :history (car replicas)))
+  ;            (histories-are-prefix (cdr replicas) history))))
+;
+;(definec history-prefixp (state :system-state) :bool
+ ;    (b* ((replicas (mget :replicas state))
+  ;        ((when (! (whole-brainp replicas))) nil)
+   ;       (primary (get-primary replicas))
+    ;      (backups (get-backups replicas))
+     ;     (primary-history (mget :history primary)))
+      ; (histories-are-prefix backups primary-history)))
+
+;(definec history-increasingp (prev-state next-state :system-state) :bool
+ ;    (b* ((prev-reps (mget :replicas prev-state))
+  ;        (next-reps (mget :replicas next-state))
+   ;       )))
+
+#|
+
+Functions for proving desired properties
+
+|#
+
+(definec init-replica-groupp (rg :replica-group) :bool
+	 (b* (((when (! (single-primaryp rg))) nil)
+              (primary (get-primary rg))
+              (paddr (mget :addr primary))
+              (backaddrs (mget :backups primary)))
+           (== rg (init-replica-group paddr backaddrs))))
+
+(definec init-networkp (net :network) :bool
+	 (lendp net))
+
+(definec init-system-statep (st :system-state) :bool
+	 (and (init-replica-groupp (car st))
+	      (init-networkp (cdr st))))
+
+(definec history-prefix-of (test :replica base :replica) :bool
+	 ;; use suffix since history grows from front
+	 (is-suffix-of (mget :history test) (mget :history base)))
+
+(definec history-prefixp-helper (primary :replica backups :lorep) :bool
+	 (if (lendp backups)
+	     t
+	     (and (history-prefix-of (first backups) primary)
+		  (history-prefixp-helper primary (rest backups)))))
+
+(definec history-prefixp (st :system-state) :bool
+	 :input-contract (single-primaryp (car st))
+	 (let* ((rg (car st))
+		(primary (get-primary rg))
+		(backups (get-backups rg)))
+	   (history-prefixp-helper primary backups)))
+
+(definec history-increasingp-helper (test-rg :replica-group base-rg :replica-group) :bool
+	 (b* (((when (endp test-rg)) t)
+	      (addr (caar test-rg))
+	      (test-rep (cdar test-rg))
+	      (base-rep (mget addr base-rg))
+	      ((when (! base-rep)) nil))
+	   (and (history-prefix-of test-rep base-rep)
+		(history-increasingp-helper (cdr test-rg) base-rg))))
+
+(definec history-increasingp (prev :system-state next :system-state) :bool
+	 (let ((prev-rg (car prev))
+	       (next-rg (car next)))
+	   (history-increasingp-helper prev-rg next-rg)))
+
+(definec memory-consistentp-helper (rg :replica-group) :bool
+	 (b* (((when (endp rg)) t)
+	      (r (cdar rg))
+	      (mem (mget :memory r))
+	      (hist (mget :history r))
+	      (hmem (alist-2-map hist)))
+	   (and (== mem hmem)
+		(memory-consistentp-helper (cdr rg)))))
+
+
+(definec memory-consistentp (st :system-state) :bool
+	 (memory-consistentp-helper (car st)))
+
+#|
+
+Desired properties
+
+|#
+
+;; Each backup's history member is a prefix of that of the primary.
+(property backups-prefix-of-primary (init :system-state st :system-state evs :events)
+  :hyps (and (init-system-statep init)
+	     (== st (transition init evs)))
+  :body (history-prefixp st))
+
+;; Each replica's history member is a prefix of itself after each step.
+(property replica-histories-increasing (init :system-state st :system-state evs :events st-prime :system-state ev :event)
+  :hyps (and (init-system-statep init)
+	     (== st (transition init evs))
+	     (== st-prime (transition-system-state st ev)))
+  :body (history-increasingp st st-prime))
+
+;; Each replica's memory is consistent with its memory.
+(property replica-memory-consistency (init :system-state st :system-state evs :events)
+  :hyps (and (init-system-statep init)
+             (== st (transition init evs)))
+  :body (memory-consistentp st))
+
+
+
+;; TODO: define is-prefix-of, event packets can only be reads or writes!!
