@@ -1,29 +1,5 @@
 (in-package "ACL2S")
 
-;(modeling-start)
-;(modeling-validate-defs)
-
-#|
-
-Utility functions
-
-|#
-
-;(definec uniquesp (l :tl) :bool
-;  (cond
-;    ((lendp l) t)
-;    ((in (first l) (rest l)) nil)
-;    (t (uniquesp (rest l)))))
-
-;(definec is-prefix (test :tl base :tl) :bool
-;     (match (list test base)
-;         (('() &) t)
-;       (((& . &) '()) nil)
-;       (((f1 . r1) (f2 . r2))
-;        (if (== f1 f2)
-;        (is-prefix r1 r2)
-;        nil))))
-
 #|
 
 Custom Set Implementation
@@ -54,24 +30,29 @@ Custom Set Implementation
 	 (if (lendp l)
 	     '()
 	     (sadd (first l) (l2s (rest l)))))
-
-#|
-
-Replica defdatas
-
-|#
+(in-package "ACL2S")
+(include-book "utils")
 
 ;; NOTE: Map type doesn't work in current version of ALC2s.
 ;; Therefore, it was suggested to use alistof instead.
 (defdata key-type int) ;; TODO: getting errors with symbol and string
-(property
 (defdata val-type (oneof int 'nil))
 
 (defdata addr-comp (range integer (0 <= _ < 256)))
 (defdata address (list addr-comp addr-comp addr-comp addr-comp))
 (defdata loaddr (listof address))
 (defdata soaddr (map address none))
+(property address-s2l-type-remains (x :all)
+  :hyps (soaddrp x)
+  :body (loaddrp (s2l x)))
 (in-theory (disable addressp))
+
+
+#|
+
+Replica defdatas
+
+|#
 
 ;; All writes are ordered at the primary and the backups apply the
 ;; updates in the order specified by the primary. This means that
@@ -98,6 +79,18 @@ Replica defdatas
 (defdata replica-group (map address replica))
 (defdata lorep (listof replica))
 
+
+#|
+
+Replica creation functions
+
+|#
+
+;; Initialize replica group.
+(definec init-replica-group (primary :address backups :soaddr) :replica-group
+	 ;;     :input-contract (! (mget primary backups))
+	 (init-replica-group-helper (s2l backups) primary backups))
+
 (definec init-replica (addr :address role :replica-role backups :soaddr) :replica
 	 :function-contract-hints (("goal" :use ((:instance replica-constructor-pred
 							    (replica-addr addr)
@@ -111,27 +104,21 @@ Replica defdatas
 
 (definec init-replica-group-helper (addrs :loaddr primary :address backups :soaddr) :replica-group
 	 :function-contract-hints (("goal" :in-theory (disable addressp init-replica-definition-rule)))
-;;     :input-contract (and
-;;              (! (mget primary backups))
-;;              (contains-keys addrs backups))
+	 ;;input-contract (and
+	 ;; (! (mget primary backups))
+	 ;; (contains-keys addrs backups))
 	 (if (lendp addrs)
              (mset primary (init-replica primary 'PRIMARY backups) '())
              (mset (first addrs) (init-replica (first addrs) 'BACKUP '())
                    (init-replica-group-helper (rest addrs) primary backups))))
 
-;; Initialize replica group.
-(property address-s2l-type-remains (x :all)
-  :hyps (soaddrp x)
-  :body (loaddrp (s2l x)))
-(definec init-replica-group (primary :address backups :soaddr) :replica-group
-;;     :input-contract (! (mget primary backups))
-	 (init-replica-group-helper (s2l backups) primary backups))
 
 #|
 
 Replica utility functions
 
 |#
+
 (definec primaryp (r :replica) :bool
 	 (== 'PRIMARY (mget :role r)))
 
@@ -156,9 +143,12 @@ Replica utility functions
              (if (! (primaryp (cdar rg)))
 		 (cons (cdar rg) (get-backups (rest rg)))
 		 (get-backups (rest rg)))))
+(in-package "ACL2S")
+
+
 #|
 
-Network defdatas
+Packet defdatas
 
 |#
 
@@ -219,20 +209,37 @@ Network defdatas
                  (op  . operation)))
 (defdata network (listof packet))
 
+
+#|
+
+Packet creation functions
+
+|#
+
 (definec init-packet (src :address dst :address op :operation) :packet
 	 :function-contract-hints (("goal" :use (:instance packet-constructor-pred
 							   (packet-src src)
 							   (packet-dst dst)
 							   (packet-op op))))
 	 (packet src dst op))
+(in-package "ACL2S")
+
 
 #|
 
-Network validity predicates
+Replica transition defdatas
 
 |#
 
 (defdata r-trans-return-type (cons replica network))
+(defdata rg-trans-return-type (cons replica-group network))
+
+
+#|
+
+Replica transition functions
+
+|#
 
 (definec trans-replica-read-req (r :replica dst :address key :key-type) :r-trans-return-type
 	 :function-contract-hints (("Goal'" :in-theory (disable init-packet-definition-rule)))
@@ -311,7 +318,6 @@ Network validity predicates
 	    (trans-replica-repl-req r src (nth 3 op) (nth 1 op) (nth 2 op)))
            (t (cons r '()))))
 
-(defdata rg-trans-return-type (cons replica-group network))
 (definec transition-replica-group (rg :replica-group p :packet) :rg-trans-return-type
 	 (b* ((src (mget :src p))
 	      (dst (mget :dst p))
@@ -324,12 +330,23 @@ Network validity predicates
               (rg2 (mset dst r2 rg)))
 	   (cons rg2 pkts)))
 
-	 
-(defdata system-state (cons replica-group network))
-(definec init-system-state (primary :address backups :soaddr) :system-state
-	 (cons (init-replica-group primary backups) '()))
+
+#|
+
+System state transition defdatas
+
+|#
 
 (defdata event (oneof nat packet))
+(defdata events (listof event))
+
+
+#|
+
+System state transition functions
+
+|#
+
 (definec transition-system-state (st :system-state ev :event) :system-state
 	 (let ((rg (car st))
                (net (cdr st)))
@@ -344,7 +361,6 @@ Network validity predicates
 		   (net2 (append (cdr trans) net-wo-pkt)))
 		(cons rg2 net2))))))
 
-(defdata events (listof event))
 (definec transition (st :system-state evs :events) :system-state
 	 (if (lendp evs)
 	     st
