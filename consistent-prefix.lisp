@@ -378,6 +378,19 @@ System state transition defdatas
 (defdata event (oneof nat packet))
 (defdata events (listof event))
 
+;; True if nat or packet from client (i.e., read or write req).
+(definec extern-eventp (ev :event) :bool
+	 (or (natp ev)
+	     (and (packetp ev)
+		  (let ((op (mget :op ev)))
+		    (or (read-reqp op)
+			(write-reqp op))))))
+
+(definec extern-eventsp (evs :events) :bool
+	 (if (lendp evs)
+	     t
+	     (and (extern-eventp (first evs))
+		  (extern-eventsp (rest evs)))))
 
 #|
 
@@ -422,32 +435,6 @@ System state transition functions
 	 ))
   (transition st evs))
 
-
-#|
-
-Properties to prove
-
-|#
-
-;(definec histories-are-prefix (replicas :lorep history :replica-write-history) :bool
- ;    (if (lendp replicas)
-  ;       t
-;	 ;; use suffix since history grows from front
- ;        (and (is-suffix-of (mget :history (car replicas)))
-  ;            (histories-are-prefix (cdr replicas) history))))
-;
-;(definec history-prefixp (state :system-state) :bool
- ;    (b* ((replicas (mget :replicas state))
-  ;        ((when (! (whole-brainp replicas))) nil)
-   ;       (primary (get-primary replicas))
-    ;      (backups (get-backups replicas))
-     ;     (primary-history (mget :history primary)))
-      ; (histories-are-prefix backups primary-history)))
-
-;(definec history-increasingp (prev-state next-state :system-state) :bool
- ;    (b* ((prev-reps (mget :replicas prev-state))
-  ;        (next-reps (mget :replicas next-state))
-   ;       )))
 
 #|
 
@@ -509,9 +496,27 @@ Functions for proving desired properties
 	   (and (== mem hmem)
 		(memory-consistentp-helper (cdr rg)))))
 
-
 (definec memory-consistentp (st :system-state) :bool
 	 (memory-consistentp-helper (car st)))
+
+;(definec packets-correspond (req :packet res :packet) :bool
+;	 ...)
+;
+;(definec memory-writep (wreq :packet st :system-state) :bool
+;	 :input-contract (write-reqp (mget :op wreq))
+;	 (b* ((dst (mget :dst wreq))
+;	      (rg (car st))
+;	      (r (mget dst rg))
+;	      ((when (or (! r) (! (primaryp r)))) nil)
+;	      (mem (mget :memory r))
+;	      (op (mget :op wreq))
+;	      (reqk (nth 1 op))
+;	      (reqv (nth 2 op)))
+;	   (== (mget reqk mem) reqv)))
+;
+;(definec memory-readp (rreq :packet rres :packet st :system-state) :bool
+;	 :input-contract (and (read-reqp rreq) (packets-correspond rres))
+
 
 #|
 
@@ -522,12 +527,16 @@ Desired properties
 ;; Each backup's history member is a prefix of that of the primary.
 (property backups-prefix-of-primary (init :system-state st :system-state evs :events)
   :hyps (and (init-system-statep init)
+	     (extern-eventsp evs)
 	     (== st (transition init evs)))
   :body (history-prefixp st))
 
 ;; Each replica's history member is a prefix of itself after each step.
-(property replica-histories-increasing (init :system-state st :system-state evs :events st-prime :system-state ev :event)
+(property replica-histories-increasing (init :system-state st :system-state evs :events
+					st-prime :system-state ev :event)
   :hyps (and (init-system-statep init)
+	     (extern-eventsp evs)
+	     (extern-eventp ev)
 	     (== st (transition init evs))
 	     (== st-prime (transition-system-state st ev)))
   :body (history-increasingp st st-prime))
@@ -535,9 +544,33 @@ Desired properties
 ;; Each replica's memory is consistent with its memory.
 (property replica-memory-consistency (init :system-state st :system-state evs :events)
   :hyps (and (init-system-statep init)
+	     (extern-eventsp evs)
              (== st (transition init evs)))
   :body (memory-consistentp st))
 
+;; A read of a key from a replica will return the value corresponding to the key in that replica's memory.
+(property replica-reads-from-memory (init :system-state st :system-state evs :events
+				     st-prime :system-state ev :nat
+				     rreq :packet rres :packet)
+  :hyps (and (init-system-statep init)
+	     (extern-eventsp evs)
+	     (read-reqp (mget :op rreq))
+	     (read-resp (mget :op rres))
+	     (== st (transition init evs))
+	     (== st-prime (transition-system-state st ev))
+	     (in rreq (network-set-difference st st-prime))
+	     (in rres (network-set-difference st-prime st)))
+  :body (memory-readp rreq rres st))
 
-
-;; TODO: define is-prefix-of, event packets can only be reads or writes!!
+;; A write to a key from a replica will update the corresponding value of th key in that replica's memory.
+(property replica-reads-from-memory (init :system-state st :system-state evs :events
+                                     st-prime :system-state ev :nat
+                                     wreq :packet wres :packet)
+  :hyps (and (init-system-statep init)
+             (extern-eventsp evs)
+             (read-reqp (mget :op rreq))
+             (read-resp (mget :op rres))
+             (== st (transition init evs))
+             (== st-prime (transition-system-state st ev))
+             (in wreq (network-set-difference st st-prime)))
+  :body (memory-readp wreq st))
